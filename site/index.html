@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alert Escalation EDA — DebugMaster</title>
+<meta name="description" content="EDA and modelling write-up of team DebugMaster (2CC9AA36) for the Westminster bank-monitoring hackathon: predicting alert escalation, ROC-AUC.">
+<link rel="stylesheet" href="assets/style.css">
+<script>
+  // theme: remembered per viewer; falls back to the OS setting
+  (function () {
+    try { var t = localStorage.getItem("theme"); if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t); } catch (e) {}
+  })();
+</script>
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap">
+    <p class="eyebrow">Westminster hackathon · Bank monitoring · Elimination task</p>
+    <h1>Which alerts escalate? An honest look at 10 million transactions</h1>
+    <p class="lede">Exploratory analysis, validation and modelling for predicting whether a monitoring alert
+      (<code>signal_id</code>) is escalated. Metric: ROC-AUC. Every number on this page was computed by us on the
+      provided data (model scores: cross-validation on the training set).</p>
+    <div class="team"><span>Team <b>DebugMaster</b></span><span>TEAM_ID <b>2CC9AA36</b></span><span>Submission <b>team_2CC9AA36.csv</b></span></div>
+  </div>
+</header>
+
+<nav class="nav" aria-label="Sections">
+  <div class="wrap">
+    <ul>
+      <li><a href="#overview">1 Overview</a></li>
+      <li><a href="#data">2 Dataset</a></li>
+      <li><a href="#figures">3 Visualisations</a></li>
+      <li><a href="#insights">4 Insights</a></li>
+      <li><a href="#target">5 Target</a></li>
+      <li><a href="#features">6 Features</a></li>
+      <li><a href="#modelling">7 Modelling</a></li>
+      <li><a href="#reliability">8 Reliability</a></li>
+      <li><a href="#limits">9 Limitations</a></li>
+      <li><a href="#repro">10 Reproducibility</a></li>
+    </ul>
+    <button class="theme-btn" id="themeBtn" type="button" aria-label="Toggle light or dark theme">Theme</button>
+  </div>
+</nav>
+
+<main class="wrap">
+
+<!-- 1 ============================================================ -->
+<section id="overview">
+  <h2><span class="num">1</span>Overview and approach</h2>
+  <p class="sub">Each alert comes with ~180 days of the customer's transaction history. The task is to rank alerts by
+    the probability that an analyst escalates them (<code>eskalatsiya = 1</code>); submissions are scored by ROC-AUC.</p>
+
+  <div class="kpis">
+    <div class="kpi"><p class="label">Final CV ROC-AUC</p><p class="value">0.6478</p><p class="note">± 0.0105 · 15 folds</p></div>
+    <div class="kpi"><p class="label">Best single model (LR)</p><p class="value">0.6453</p><p class="note">± 0.0116 · 65 features</p></div>
+    <div class="kpi"><p class="label">Escalation rate (train)</p><p class="value">17.18%</p><p class="note">2 405 of 14 000</p></div>
+    <div class="kpi"><p class="label">Transactions</p><p class="value">10.0M</p><p class="note">6 987 663 train · 3 027 575 test</p></div>
+  </div>
+
+  <h3>Key takeaways</h3>
+  <p>The escalation signal is weak and sits in the <b>level of amounts by transaction type and direction</b>:
+    high bank-transfer amounts go with fewer escalations, while high card outflows and high cash inflows go with more.
+    The dramatic pre-alert burst, the transaction sequence and the long-term history carry almost no additional
+    information. The dependence is close to linear and additive, so a logistic regression on 65 aggregates is
+    the strongest single model (0.6453). A pre-registered rank-average of LR, LightGBM and CatBoost (50/25/25) reaches 0.6478.</p>
+
+  <h3>Pipeline</h3>
+  <ol class="steps">
+    <li><b>Anchor rule</b> — measure every signal's history back from <code>max(signal date 00:00, end of the last transaction's day)</code>; nothing after the anchor exists.</li>
+    <li><b>65 baseline features</b> — one function applied identically to train and test (no target use).</li>
+    <li><b>Validation</b> — repeated stratified K-fold (5 folds × 3 repeats, seed 42), paired fold comparisons, strict acceptance rule, feature selection only inside folds.</li>
+    <li><b>Models</b> — logistic regression, LightGBM, CatBoost on the same folds.</li>
+    <li><b>Ensemble</b> — in-fold rank-average 50/25/25, then quantile-mapped onto the LR prediction distribution.</li>
+  </ol>
+</section>
+
+<!-- 2 ============================================================ -->
+<section id="data">
+  <h2><span class="num">2</span>Dataset overview</h2>
+  <p class="sub">Synthetic data. Two signal tables and two transaction tables; every signal has at least one transaction,
+    and no signal appears in both train and test.</p>
+
+  <div class="table-wrap"><table>
+    <thead><tr><th>Table</th><th class="n">Rows</th><th class="n">Signals</th><th>Columns</th></tr></thead>
+    <tbody>
+      <tr><td><code>train_signals.csv</code></td><td class="n">14 000</td><td class="n">14 000</td><td>signal_id, signal_sanasi (signal date), eskalatsiya (target)</td></tr>
+      <tr><td><code>test_signals.csv</code></td><td class="n">6 000</td><td class="n">6 000</td><td>signal_id, signal_sanasi</td></tr>
+      <tr><td><code>train_transactions.parquet</code></td><td class="n">6 987 663</td><td class="n">14 000</td><td rowspan="2">signal_id, tranzaksiya_vaqti (timestamp), kirim_chiqim (inflow / outflow), tranzaksiya_turi (card / bank transfer / cash / international), miqdor_indeksi (amount index)</td></tr>
+      <tr><td><code>test_transactions.parquet</code></td><td class="n">3 027 575</td><td class="n">6 000</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="grid-2">
+    <div class="card">
+      <h3>Shape of a signal</h3>
+      <ul>
+        <li>Transactions per signal: median <b>461</b> (train) / <b>460.5</b> (test); mean <b>499.1</b> / <b>504.6</b>; train range 1–2 279.</li>
+        <li>History length: median <b>179.45</b> / <b>179.44</b> days before the signal.</li>
+        <li>Signal dates: 2025-01-01 … 2026-12-31 in both train and test; transactions from 2024-07-05.</li>
+        <li><code>miqdor_indeksi</code> is already a log-like standardised index (−2.91 … 6.69).</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Mix of transactions (train)</h3>
+      <ul>
+        <li>Card 3 758 797 · bank transfer 2 754 687 · cash 442 346 · international 31 833.</li>
+        <li>Inflow 5 286 880 · outflow 1 700 783.</li>
+        <li>No missing values, no duplicate rows, and no transaction is shared between two signals.</li>
+        <li>Target: <b>2 405 escalated of 14 000 (17.18%)</b>.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- 3 ============================================================ -->
+<section id="figures">
+  <h2><span class="num">3</span>Visualisations</h2>
+  <p class="sub">Ten charts from our EDA notebooks (training data unless stated). Chart labels were redrawn in English by the same scripts on the same data; captions explain each one. Tap a chart to open it full size.</p>
+
+  <div class="figs">
+    <figure>
+      <div class="img"><a href="assets/01_target_by_month.png" title="Open full-size image"><img src="assets/01_target_by_month.png" width="1170" height="494" loading="lazy"
+        alt="Line chart of the monthly escalation rate in train from January 2025 to December 2026, moving between about 14% and 21% around a 17.2% average."></a></div>
+      <figcaption><b>Escalation rate by month</b><span>The monthly rate ranges from 13.9% (2025-09) to 21.2% (2026-04), but a χ² test gives p = 0.094 — no reliable seasonality, so date features are not used.</span></figcaption>
+    </figure>
+
+    <figure>
+      <div class="img"><a href="assets/03_leakage_signal_day.png" title="Open full-size image"><img src="assets/03_leakage_signal_day.png" width="1430" height="494" loading="lazy"
+        alt="Left: share of signals by gap between signal date and last transaction, train and test. Right: bar chart showing transactions after midnight on the signal day occur only for signals dated 2025-02-28: 21 of 38 in train, 2 of 14 in test."></a></div>
+      <figcaption><b>Leakage check: transactions on the signal day</b><span>All 840 train rows (21 signals) and 51 test rows (2 signals) timed after 00:00 of the signal day belong to signals dated 2025-02-28 — a date artefact, not leakage. The gap alone predicts escalation with AUC 0.510; the anchor rule handles it.</span></figcaption>
+    </figure>
+
+    <figure>
+      <div class="img"><a href="assets/04_tx_count_history.png" title="Open full-size image"><img src="assets/04_tx_count_history.png" width="1430" height="494" loading="lazy"
+        alt="Left: density of transaction counts per signal for escalated, non-escalated and test signals. Right: log-scale density of history length in days for train and test, concentrated near 180 days."></a></div>
+      <figcaption><b>Volume and history length</b><span>Escalated signals have slightly more transactions (median 493 vs 455, AUC 0.531); history length barely matters (AUC 0.513). Train and test look alike (KS p = 0.32 and 0.81).</span></figcaption>
+    </figure>
+
+    <figure>
+      <div class="img"><a href="assets/06_amount_distribution.png" title="Open full-size image"><img src="assets/06_amount_distribution.png" width="1430" height="494" loading="lazy"
+        alt="Left: log-scale density of the amount index for escalated and non-escalated transactions. Right: box plots of the amount index by transaction type: card lowest, international highest."></a></div>
+      <figcaption><b>Amounts: lower for escalations, strongly type-dependent</b><span>Escalated signals have lower amounts (mean −0.182 vs −0.123). Type means differ sharply (card −0.43, bank 0.14, cash 0.53, international 1.99), which is why amounts are modelled per type. The spike at the far left is the “floor” discussed in section 4.</span></figcaption>
+    </figure>
+
+    <figure>
+      <div class="img"><a href="assets/08_recent_activity.png" title="Open full-size image"><img src="assets/08_recent_activity.png" width="1430" height="494" loading="lazy"
+        alt="Left: median ratio of recent daily activity to average for the last 1, 3, 7 and 30 days, nearly identical for both classes. Right: daily activity over the last 60 days, flat then spiking on the final day for both classes."></a></div>
+      <figcaption><b>The pre-alert burst is universal</b><span>In the last day before the alert, activity is 13.6× the signal's usual rate — for escalated and non-escalated alerts alike. The burst is the alert trigger, not a discriminator.</span></figcaption>
+    </figure>
+
+    <figure>
+      <div class="img"><a href="assets/11_burst_window_auc.png" title="Open full-size image"><img src="assets/11_burst_window_auc.png" width="1040" height="650" loading="lazy"
+        alt="Heatmap of univariate AUC for burst statistics (count, inflow share, type shares, amount sum, mean, max, standard deviation) across windows of 1 to 72 hours; all values between 0.507 and 0.530."></a></div>
+      <figcaption><b>Burst windows: every cell is weak</b><span>The burst sits within ~3 minutes of the anchor (median 31 transactions). Across 1–72 hour windows, every burst statistic has a univariate AUC between 0.507 and 0.530.</span></figcaption>
+    </figure>
+
+    <figure>
+      <div class="img"><a href="assets/09_univariate_auc.png" title="Open full-size image"><img src="assets/09_univariate_auc.png" width="1040" height="845" loading="lazy"
+        alt="Horizontal bar chart of univariate AUC for signal-level aggregates; the highest is maximum amount at about 0.548, followed by amount standard deviation and mean; most time-pattern features are near 0.50 to 0.51."></a></div>
+      <figcaption><b>No single strong feature</b><span>The best single aggregate reaches only AUC 0.548 (max amount, lower for escalations); time-of-day, weekend and recency features sit near 0.51. The signal has to be assembled from many weak parts.</span></figcaption>
+    </figure>
+
+    <figure>
+      <div class="img"><a href="assets/12_probe_auc.png" title="Open full-size image"><img src="assets/12_probe_auc.png" width="1040" height="494" loading="lazy"
+        alt="Bar chart of cross-validated AUC for feature groups: general aggregates about 0.608, burst about 0.546, sequence about 0.519, and combinations with general aggregates around 0.606 to 0.610."></a></div>
+      <figcaption><b>Feature-group probe</b><span>With a gradient-boosting probe, general aggregates score 0.608, burst windows 0.546 and sequence patterns 0.519; adding burst or sequence features to the aggregates changes the AUC by at most ±0.002.</span></figcaption>
+    </figure>
+
+    <figure>
+      <div class="img"><a href="assets/10_adversarial.png" title="Open full-size image"><img src="assets/10_adversarial.png" width="1040" height="546" loading="lazy"
+        alt="Horizontal bar chart of univariate train-versus-test AUC for signal aggregates, all between 0.504 and 0.507, with the title reporting a model AUC of 0.499."></a></div>
+      <figcaption><b>Adversarial validation: train and test are exchangeable</b><span>A model trying to tell train from test signals scores AUC 0.499 (chance); signal dates match too (KS p = 0.998). Plain stratified cross-validation is therefore a trustworthy proxy.</span></figcaption>
+    </figure>
+
+    <figure>
+      <div class="img"><a href="assets/14_safety_pred_distribution.png" title="Open full-size image"><img src="assets/14_safety_pred_distribution.png" width="1040" height="494" loading="lazy"
+        alt="Overlaid histograms of logistic-regression out-of-fold predictions on train and predictions on test; the two distributions almost coincide around the 0.172 train rate."></a></div>
+      <figcaption><b>Predictions: test looks like out-of-fold</b><span>The logistic-regression test predictions match its out-of-fold distribution (KS = 0.0144, p = 0.34): no shift or calibration problem. The final ensemble predictions are quantile-mapped to this LR distribution.</span></figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- 4 ============================================================ -->
+<section id="insights">
+  <h2><span class="num">4</span>Insights from transaction histories</h2>
+  <p class="sub">What moves the escalation rate, from the EDA and from the logistic-regression coefficients
+    (standardised; every sign identical in 15 of 15 fold models).</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <h3><span class="tag pos">More escalation</span></h3>
+      <ul>
+        <li>Higher average cash inflow amount (coef +0.224).</li>
+        <li>Wider spread and higher top-end of card amounts (card std +0.134, card max +0.124, card 90th percentile +0.106).</li>
+        <li>Higher average card outflow amount (+0.120).</li>
+        <li>Slightly more transactions: escalation rises from 15.5% in the lowest to 19.0% in the highest volume quintile.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3><span class="tag neg">Less escalation</span></h3>
+      <ul>
+        <li>Higher average bank-transfer outflow (−0.217) and inflow (−0.142) amounts.</li>
+        <li>Higher bank-transfer 90th percentile (−0.147) and spread (−0.143).</li>
+        <li><b>“Floor” bank inflows</b> (−0.140): 5 117 transactions lie within 0.01 of the global minimum amount (−2.912), and 100% of them are bank-transfer inflows. Signals with such a transaction (12.6%) escalate at 10.0% vs 18.2% for the rest.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>Weak or no signal</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Candidate signal</th><th>Evidence</th><th>Verdict</th></tr></thead>
+    <tbody>
+      <tr><td>Share of each transaction type / direction</td><td>Shares differ by ≤ 0.3 pp between classes; best share AUC 0.524 (cash)</td><td><span class="tag neu">weak</span></td></tr>
+      <tr><td>Hour of day, weekend</td><td>Univariate AUC ≤ 0.511</td><td><span class="tag neu">none</span></td></tr>
+      <tr><td>Pre-alert burst (size, mix, amounts)</td><td>Univariate AUC 0.507–0.530 for all windows</td><td><span class="tag neu">none beyond levels</span></td></tr>
+      <tr><td>Sequences: pass-through (inflow then outflow), type transitions, inter-arrival times, repeated amounts</td><td>Univariate AUC ≤ 0.539, mostly volume in disguise; sequence group probe 0.519</td><td><span class="tag neu">none</span></td></tr>
+      <tr><td>Long-term dynamics (trends, last 7/30/90 days vs earlier)</td><td>Adding them lowers AUC (−0.0030 LR, −0.0046 GBM)</td><td><span class="tag neg">harmful</span></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- 5 ============================================================ -->
+<section id="target">
+  <h2><span class="num">5</span>Target analysis</h2>
+  <div class="grid-2">
+    <div class="card">
+      <h3>Escalation rate</h3>
+      <ul>
+        <li>Overall <b>17.18%</b> (2 405 / 14 000) — imbalanced, so all splits are stratified.</li>
+        <li>By year: 16.7% (2025) and 17.8% (2026). Monthly 13.9–21.2%, χ² p = 0.094.</li>
+        <li>Signal date, weekday and signal ID carry nothing (AUC 0.508, 0.503 and 0.4985).</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Strongest single features (univariate AUC)</h3>
+      <div class="table-wrap" style="margin:0"><table>
+        <thead><tr><th>Feature</th><th class="n">AUC</th><th>Direction</th></tr></thead>
+        <tbody>
+          <tr><td>Max amount</td><td class="n">0.548</td><td>lower → escalation</td></tr>
+          <tr><td>Amount std</td><td class="n">0.543</td><td>lower → escalation</td></tr>
+          <tr><td>Mean amount</td><td class="n">0.539</td><td>lower → escalation</td></tr>
+          <tr><td>Number of transactions</td><td class="n">0.531</td><td>higher → escalation</td></tr>
+          <tr><td>Cash share</td><td class="n">0.524</td><td>higher → escalation</td></tr>
+          <tr><td>International share</td><td class="n">0.522</td><td>higher → escalation</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+  <p>Amount levels <em>per type</em> are more informative than any of these: four per-type mean amounts plus the minimum amount already reach
+    0.612 ± 0.014 in a gradient-boosting probe, versus 0.608 for all 27 general aggregates.</p>
+</section>
+
+<!-- 6 ============================================================ -->
+<section id="features">
+  <h2><span class="num">6</span>Features derived from the EDA</h2>
+  <p class="sub">The final model uses 65 features built by one function for train and test, with the anchor rule and no target information.</p>
+
+  <div class="table-wrap"><table>
+    <thead><tr><th>Group</th><th class="n">Count</th><th>What and why</th></tr></thead>
+    <tbody>
+      <tr><td>General aggregates</td><td class="n">27</td><td>Volume, inflow and type shares, amount sum, mean, max, std and quantiles, history length, hour and weekend shares, mean amount per type and per direction — the broad profile.</td></tr>
+      <tr><td>Amount by type</td><td class="n">32</td><td>Per type: min, max, std, median, 10th and 90th percentile; plus mean amount for each type × direction cell — where the signal lives.</td></tr>
+      <tr><td>Floor</td><td class="n">6</td><td>Count, flag and share of transactions at the minimum amount, minimum bank inflow — the “floor bank inflow” effect. Removing these 6 features costs 0.0038 AUC (worse in 12 of 15 folds).</td></tr>
+      <tr class="hl"><td>Total</td><td class="n">65</td><td>Logistic regression 0.6453 ± 0.0116</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Tried, measured, not kept</h3>
+  <p>Each idea was added on top of the 65 features and compared fold-by-fold. None passed our acceptance rule (section 7).</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Idea</th><th class="n">Features</th><th class="n">Δ AUC vs baseline (LR)</th><th class="n">Folds better</th></tr></thead>
+    <tbody>
+      <tr><td>Type × direction statistics (8 cells)</td><td class="n">+126</td><td class="n">−0.0006</td><td class="n">6 / 15</td></tr>
+      <tr><td>Per-type and per-direction statistics</td><td class="n">+102</td><td class="n">−0.0014</td><td class="n">3 / 15</td></tr>
+      <tr><td>General volume, active days, balance</td><td class="n">+26</td><td class="n">−0.0004</td><td class="n">4 / 15</td></tr>
+      <tr><td>Long history: daily series, trends, recent vs earlier</td><td class="n">+48</td><td class="n">−0.0030</td><td class="n">4 / 15</td></tr>
+      <tr><td>Burst (last ~3 minutes)</td><td class="n">+5</td><td class="n">+0.0007</td><td class="n">11 / 15</td></tr>
+      <tr><td>Amount histograms (“bag of transactions”), 12 bins</td><td class="n">+336</td><td class="n">−0.0055</td><td class="n">3 / 15</td></tr>
+      <tr><td>Amount histograms, 24 bins</td><td class="n">+624</td><td class="n">−0.0141</td><td class="n">1 / 15</td></tr>
+      <tr><td>Splines on the top-20 features (selected in-fold)</td><td class="n">+140</td><td class="n">−0.0010</td><td class="n">9 / 15</td></tr>
+      <tr><td>Pairwise products of the top-10 features</td><td class="n">+45</td><td class="n">−0.0009</td><td class="n">7 / 15</td></tr>
+    </tbody>
+  </table></div>
+  <p class="fig-note">The type × direction group has 136 features; 10 are constant and were dropped before modelling. Histogram shares alone reach only 0.6296 (12 bins) and 0.6201 (24 bins). Splines and interactions not helping is further evidence that the relationship is essentially linear-additive.</p>
+</section>
+
+<!-- 7 ============================================================ -->
+<section id="modelling">
+  <h2><span class="num">7</span>Validation and modelling</h2>
+
+  <div class="grid-2">
+    <div class="card">
+      <h3>Validation protocol</h3>
+      <ul>
+        <li>Repeated stratified K-fold: <b>5 folds × 3 repeats</b>, seed 42 — the same 15 folds for every model.</li>
+        <li>Metric: mean ± std of the 15 fold AUCs; comparisons are paired by fold and reported per repeat.</li>
+        <li><b>Strict acceptance rule</b>: a change must gain ≥ 0.003 AUC, win in ≥ 12 of 15 folds and have the same sign in all 3 repeats.</li>
+        <li>Any feature selection happens <b>inside</b> the training folds.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>A leak we caught ourselves</h3>
+      <p style="margin:0">L1-regularised selection of 65 features on the <em>full</em> training set, followed by cross-validation, gave
+        <b>0.6548</b> and “won” in 15/15 folds. Repeating the selection inside each fold gives <b>0.6441</b>.
+        The +0.0107 was pure selection optimism — the list was discarded and the in-fold rule became mandatory.</p>
+    </div>
+  </div>
+
+  <h3>Results (15-fold CV)</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Model</th><th>Details</th><th class="n">ROC-AUC</th></tr></thead>
+    <tbody>
+      <tr><td>Logistic regression</td><td>median imputation → standardisation → L2 LR, C chosen by inner CV (0.01)</td><td class="n">0.6453 ± 0.0116</td></tr>
+      <tr><td>LightGBM</td><td>depth 3, 6 leaves, strong L2, early stopping on a 15% inner split</td><td class="n">0.6400 ± 0.0118</td></tr>
+      <tr><td>CatBoost</td><td>depth 3, l2_leaf_reg 20, early stopping on a 15% inner split</td><td class="n">0.6391 ± 0.0108</td></tr>
+      <tr><td>HistGradientBoosting</td><td>heavily constrained (not used in the ensemble)</td><td class="n">0.6395 ± 0.0126</td></tr>
+      <tr class="hl"><td>Ensemble LR + LGB + CAT</td><td>weights 50 / 25 / 25 fixed in advance</td><td class="n">0.6478 ± 0.0105</td></tr>
+    </tbody>
+  </table></div>
+  <p class="fig-note">Std uses ddof = 1; with ddof = 0 the ensemble reads 0.6478 ± 0.0101 (same folds, same result).</p>
+
+  <h3>How the ensemble is built</h3>
+  <ul>
+    <li>Within each validation fold, each model's predictions are converted to ranks and averaged 0.50 · LR + 0.25 · LGB + 0.25 · CAT. Weights were fixed before looking at the blend, so there is no weight-tuning optimism.</li>
+    <li>Gain over LR: +0.0025 ± 0.0054, better in 10 of 15 folds, positive in all three repeats (+0.0025 / +0.0014 / +0.0034). It does <b>not</b> pass the strict rule but is consistently positive.</li>
+    <li>It helps because the models disagree: test-prediction Spearman correlation LR–LightGBM 0.897, LR–CatBoost 0.894, LightGBM–CatBoost 0.980.</li>
+    <li>For the test set, the blended ranking is <b>quantile-mapped onto the LR test predictions</b>: order comes from the ensemble, values from the calibrated LR (all probabilities stay in 0.0011–0.5983).</li>
+  </ul>
+</section>
+
+<!-- 8 ============================================================ -->
+<section id="reliability">
+  <h2><span class="num">8</span>Reliability</h2>
+  <div class="grid-2">
+    <div class="card">
+      <h3>Independent audit</h3>
+      <ul>
+        <li>No target use in feature code; no data after the anchor (0 transactions).</li>
+        <li>All 382 engineered features (including the 65 used) rebuilt from the raw transactions matched the stored files <b>bit for bit</b>; building from train alone gives the same values.</li>
+        <li>Re-fitting LR on one fold reproduced the stored out-of-fold predictions exactly; the folds regenerate exactly from seed 42.</li>
+        <li>The submission rebuilt from its three components equals the delivered file exactly.</li>
+        <li>No artefacts: signal-ID AUC 0.4985, file-order AUC 0.4985; train and test IDs are randomly interleaved.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Clean re-run in Colab</h3>
+      <p style="margin:0 0 8px"><span class="tag pos">Verified</span> The standalone notebook was run in a clean Colab environment, starting from the raw parquet files.
+        It reproduced the cross-validation results exactly (LR 0.6453, LightGBM 0.6400, CatBoost 0.6391, blend 0.6478),
+        and the file it wrote matches the final submission in both values and order.</p>
+      <p class="fig-note" style="margin:0">Fingerprint shared by the notebook output and the final file (6 000 rows, sum 1037.305504):<br>
+        value hash (8 decimals) <code>529679000c9634c4</code> · rank hash <code>f8aca394b0317c73</code></p>
+    </div>
+  </div>
+</section>
+
+<!-- 9 ============================================================ -->
+<section id="limits">
+  <h2><span class="num">9</span>Limitations and conclusion</h2>
+  <div class="callout"><p><b>Noise level.</b> With 6 000 test signals, the standard error of a test AUC around 0.65 is ≈ 0.010
+    (Hanley–McNeil approximation at a prevalence similar to train). The ensemble's +0.0025 over LR is well inside that noise;
+    differences between our single models are too.</p></div>
+  <div class="grid-2">
+    <div class="card">
+      <h3>What did not work</h3>
+      <ul>
+        <li>Burst composition, transaction sequences and long-term trends.</li>
+        <li>Amount histograms, splines and pairwise interactions.</li>
+        <li>More features in general: none of the 14 feature-group tests passed the acceptance rule.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>What we would do next</h3>
+      <ul>
+        <li>A sequence model on the last 512 transactions (the data-preparation script exists and was tested on a sample; no model was trained).</li>
+        <li>Choose ensemble weights with nested cross-validation instead of fixing them.</li>
+        <li>Understand the generator behind the “floor” and cap amounts — the clearest structure we found.</li>
+      </ul>
+    </div>
+  </div>
+  <p>Conclusion: a small, well-validated linear model on type-level amount aggregates captures almost all the signal we could find;
+    the final ensemble adds a small but consistent gain, and every number here is backed by paired, repeated cross-validation.</p>
+</section>
+
+<!-- 10 ============================================================ -->
+<section id="repro">
+  <h2><span class="num">10</span>Reproducibility</h2>
+  <div class="card">
+    <ul>
+      <li>Notebook: <b>team_2CC9AA36.ipynb</b> — <a href="https://colab.research.google.com/drive/1K_MGhSoFG5ZecJJcev85nXrjVRA_-7QU" target="_blank" rel="noopener">open in Google Colab</a></li>
+      <li>Self-contained: from the raw <code>data/raw/</code> files to <code>notebook_output.csv</code>, seed 42, relative paths.</li>
+      <li>Steps: load → anchor rule → 65 features → folds → LR → LightGBM / CatBoost → in-fold blend → quantile mapping → format checks → comparison with <code>team_2CC9AA36.csv</code>.</li>
+      <li>Expected CV: LR 0.6453 · LightGBM 0.6400 · CatBoost 0.6391 · ensemble 0.6478. About 10–20 minutes on a Colab CPU.</li>
+      <li><b>Verified:</b> run in a clean Colab environment from the raw parquet files; these CV results were reproduced exactly, and its output file matches
+        the final submission (sum 1037.305504, value hash (8 decimals) <code>529679000c9634c4</code>, rank hash <code>f8aca394b0317c73</code>).</li>
+    </ul>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">DebugMaster · TEAM_ID 2CC9AA36 · Westminster hackathon · Static page, no tracking, no external requests.</div>
+</footer>
+
+<script>
+  (function () {
+    var btn = document.getElementById("themeBtn"), root = document.documentElement;
+    function current() {
+      var t = root.getAttribute("data-theme");
+      if (t) return t;
+      return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    }
+    function label() { btn.textContent = current() === "dark" ? "Light" : "Dark"; }
+    btn.addEventListener("click", function () {
+      var next = current() === "dark" ? "light" : "dark";
+      root.setAttribute("data-theme", next);
+      try { localStorage.setItem("theme", next); } catch (e) {}
+      label();
+    });
+    label();
+  })();
+</script>
+</body>
+</html>
