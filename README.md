@@ -108,9 +108,9 @@ The notebook was re-run in a clean Colab environment from the raw files; it repr
 
 ## Team DebugMaster
 
-- Oyatillo Abdulazizov (captain)
-- Behro'z Sa'dullayev
 - Muhammadali Yuldoshov
+- Oyatillo Abdulazizov 
+- Behro'z Sa'dullayev
 
 ## Tech stack
 
