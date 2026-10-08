@@ -94,7 +94,7 @@ The notebook is self-contained and runs top to bottom in about 10–20 minutes o
    `train_signals.csv`, `test_signals.csv`, `sample_submission.csv`, `train_transactions.parquet`, `test_transactions.parquet`.
 3. Run all cells. Expected cross-validation scores: LR 0.6453, LightGBM 0.6400, CatBoost 0.6391, ensemble 0.6478.
 
-The notebook was re-run in a clean Colab environment from the raw files; it reproduced these scores and produced a file identical to our submitted predictions.
+The notebook was re-run in a clean Colab environment from the raw files and reproduced these scores exactly; the executed copy in this repository is that run. Its output file was checked separately against our submitted predictions and matched in both values and order. The last cell repeats this comparison only when the submitted file is placed under outputs/, so it is skipped in the stored run.
 
 **Data.** The dataset belongs to the hackathon organisers and is not included in this repository.
 
